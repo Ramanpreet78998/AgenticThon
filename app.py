@@ -1,22 +1,12 @@
 import streamlit as st
-import json
-import ollama
-
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from agent_tools import (
-    calculator,
-    search_pdf,
-    summarize_text,
-    get_pdf_sources,
-    find_sources
-)
+from google import genai
+import ast
+import operator
 
 
-# =========================
 # PAGE SETTINGS
-# =========================
 
 st.set_page_config(
     page_title="AI Agent Assistant",
@@ -24,25 +14,366 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🤖 AI Agent Assistant")
 
-st.write(
-    "An AI agent that selects the appropriate "
-    "tool to solve your request."
-)
+# GEMINI CLIENT
+
+@st.cache_resource
+def get_gemini_client():
+
+    try:
+        return genai.Client()
+
+    except Exception:
+        return None
 
 
-# =========================
-# CHAT HISTORY
-# =========================
+client = get_gemini_client()
+
+MODEL_NAME = "gemini-3.8-flash"
+
+
+# SESSION STATE
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "rag_data" not in st.session_state:
+    st.session_state.rag_data = []
 
-# =========================
+
+# SAFE CALCULATOR
+
+allowed_operators = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos
+}
+
+
+def safe_calculate(expression):
+
+    try:
+
+        tree = ast.parse(
+            expression,
+            mode="eval"
+        )
+
+        def evaluate(node):
+
+            if isinstance(node, ast.Constant):
+
+                if isinstance(node.value, (int, float)):
+
+                    return node.value
+
+                raise ValueError("Invalid number")
+
+            if isinstance(node, ast.BinOp):
+
+                operation = allowed_operators.get(
+                    type(node.op)
+                )
+
+                if operation is None:
+                    raise ValueError("Invalid operator")
+
+                return operation(
+                    evaluate(node.left),
+                    evaluate(node.right)
+                )
+
+            if isinstance(node, ast.UnaryOp):
+
+                operation = allowed_operators.get(
+                    type(node.op)
+                )
+
+                if operation is None:
+                    raise ValueError("Invalid operator")
+
+                return operation(
+                    evaluate(node.operand)
+                )
+
+            raise ValueError("Invalid expression")
+
+        return str(evaluate(tree.body))
+
+    except Exception:
+
+        return "Invalid calculation."
+
+
+# PDF SEARCH
+
+def get_relevant_chunks(
+    question,
+    data,
+    top_k=3
+):
+
+    if not data:
+        return []
+
+    stop_words = {
+        "what", "is", "the", "a", "an",
+        "are", "of", "in", "on", "to",
+        "for", "and", "how", "why",
+        "does", "do", "this", "that",
+        "tell", "me", "about",
+        "which", "pdf", "contains",
+        "information"
+    }
+
+    question_words = set(
+        question.lower()
+        .replace("?", "")
+        .replace(",", "")
+        .replace(".", "")
+        .split()
+    )
+
+    important_words = (
+        question_words - stop_words
+    )
+
+    scored_chunks = []
+
+    for item in data:
+
+        text = item["text"]
+        source = item["source"]
+
+        chunk_words = set(
+            text.lower()
+            .replace(".", " ")
+            .replace(",", " ")
+            .replace("(", " ")
+            .replace(")", " ")
+            .split()
+        )
+
+        score = len(
+            important_words & chunk_words
+        )
+
+        if score > 0:
+
+            scored_chunks.append(
+                (score, source, text)
+            )
+
+    scored_chunks.sort(
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    return scored_chunks[:top_k]
+
+
+# SOURCE FINDER
+
+def find_sources(
+    question,
+    data
+):
+
+    chunks = get_relevant_chunks(
+        question,
+        data,
+        top_k=10
+    )
+
+    sources = []
+
+    for score, source, text in chunks:
+
+        if source not in sources:
+            sources.append(source)
+
+    return sources
+
+
+# GEMINI GENERATION
+
+def ask_gemini(prompt):
+
+    if client is None:
+
+        return (
+            "Gemini API is not configured. "
+            "Please add GEMINI_API_KEY in "
+            "Streamlit Secrets."
+        )
+
+    try:
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
+
+        return response.text
+
+    except Exception as error:
+
+        return (
+            "AI request could not be completed.\n\n"
+            f"Error: {error}"
+        )
+
+
+# GENERAL AI TOOL
+
+def general_ai(question):
+
+    prompt = f"""
+You are a helpful AI assistant.
+
+Answer the user's question clearly and simply.
+
+Question:
+{question}
+"""
+
+    return ask_gemini(prompt)
+
+
+# PDF QUESTION ANSWERING
+
+def answer_from_pdf(
+    question,
+    data
+):
+
+    chunks = get_relevant_chunks(
+        question,
+        data,
+        top_k=5
+    )
+
+    if not chunks:
+
+        return (
+            "I could not find this information "
+            "in the uploaded PDFs."
+        ), []
+
+    context_parts = []
+
+    sources = []
+
+    for score, source, text in chunks:
+
+        context_parts.append(text)
+
+        if source not in sources:
+            sources.append(source)
+
+    context = "\n\n".join(
+        context_parts
+    )
+
+    prompt = f"""
+You are a PDF question-answering assistant.
+
+Answer ONLY using the PDF context below.
+
+If the answer is not available in the
+context, say:
+
+"I could not find this information in the PDF."
+
+PDF CONTEXT:
+
+{context}
+
+QUESTION:
+
+{question}
+
+Give a simple and clear answer.
+"""
+
+    answer = ask_gemini(prompt)
+
+    return answer, sources
+
+
+# PDF SUMMARIZER
+
+def summarize_pdf(
+    question,
+    data
+):
+
+    chunks = get_relevant_chunks(
+        question,
+        data,
+        top_k=8
+    )
+
+    if not chunks:
+
+        return (
+            "I could not find relevant information "
+            "in the uploaded PDFs."
+        ), []
+
+    context_parts = []
+
+    sources = []
+
+    for score, source, text in chunks:
+
+        context_parts.append(text)
+
+        if source not in sources:
+            sources.append(source)
+
+    context = "\n\n".join(
+        context_parts
+    )
+
+    prompt = f"""
+Summarize the following PDF information
+in simple and clear language.
+
+Focus on the main points.
+
+PDF INFORMATION:
+
+{context}
+
+USER REQUEST:
+
+{question}
+
+Give a short, useful summary.
+"""
+
+    answer = ask_gemini(prompt)
+
+    return answer, sources
+
+
+# TITLE
+
+st.title("🤖 AI Agent Assistant")
+
+st.write(
+    "An AI agent that understands your request "
+    "and selects the appropriate tool."
+)
+
+
 # KNOWLEDGE BASE
-# =========================
 
 st.subheader("📄 Knowledge Base")
 
@@ -52,45 +383,51 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+
 if uploaded_files:
 
     all_chunks = []
 
     for uploaded_file in uploaded_files:
 
-        reader = PdfReader(uploaded_file)
+        try:
 
-        text = ""
+            reader = PdfReader(
+                uploaded_file
+            )
 
-        for page in reader.pages:
-            text += page.extract_text() or ""
+            text = ""
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50
-        )
+            for page in reader.pages:
 
-        chunks = splitter.split_text(text)
+                text += (
+                    page.extract_text() or ""
+                )
 
-        for chunk in chunks:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=500,
+                chunk_overlap=50
+            )
 
-            all_chunks.append({
-                "source": uploaded_file.name,
-                "text": chunk
-            })
+            chunks = splitter.split_text(
+                text
+            )
 
-    with open(
-        "rag_data.json",
-        "w",
-        encoding="utf-8"
-    ) as f:
+            for chunk in chunks:
 
-        json.dump(
-            all_chunks,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+                all_chunks.append({
+                    "source": uploaded_file.name,
+                    "text": chunk
+                })
+
+        except Exception as error:
+
+            st.error(
+                f"Could not read "
+                f"{uploaded_file.name}: {error}"
+            )
+
+    st.session_state.rag_data = all_chunks
 
     st.success(
         f"✅ {len(uploaded_files)} PDF(s) loaded! "
@@ -105,12 +442,10 @@ if uploaded_files:
             f"📄 {uploaded_file.name}"
         )
 
-
-# =========================
-# CHAT AREA
-# =========================
+# ASK THE AGENT
 
 st.subheader("💬 Ask the Agent")
+
 
 for message in st.session_state.chat_history:
 
@@ -136,20 +471,11 @@ question = st.chat_input(
 )
 
 
-# =========================
-# AGENT PROCESSING
-# =========================
-
 if question:
 
     question = question.strip()
 
     question_lower = question.lower()
-
-
-    # =========================
-    # SAVE USER QUESTION
-    # =========================
 
     st.session_state.chat_history.append({
         "role": "user",
@@ -157,16 +483,10 @@ if question:
     })
 
 
-    # =========================
-    # CALCULATOR DETECTION
-    # =========================
+    # MATH DETECTION
 
     math_symbols = [
-        "+",
-        "-",
-        "*",
-        "/",
-        "%"
+        "+", "-", "*", "/", "%"
     ]
 
     has_number = any(
@@ -193,9 +513,7 @@ if question:
     )
 
 
-    # =========================
-    # SOURCE FINDER DETECTION
-    # =========================
+    # SOURCE REQUEST
 
     source_request = (
         "which pdf" in question_lower
@@ -208,10 +526,7 @@ if question:
         or "where did you find" in question_lower
     )
 
-
-    # =========================
-    # SUMMARIZER DETECTION
-    # =========================
+    # SUMMARY REQUEST
 
     summary_request = (
         "summarize" in question_lower
@@ -223,32 +538,27 @@ if question:
     )
 
 
-    # =========================
     # TOOL SELECTION
-    # =========================
-
-    # ---------------------------------
-    # CALCULATOR
-    # ---------------------------------
 
     if is_math:
 
         tool_name = "🔧 Calculator"
 
-        answer = calculator(question)
+        answer = safe_calculate(
+            question
+        )
 
         sources = []
 
-
-    # ---------------------------------
-    # SOURCE FINDER
-    # ---------------------------------
 
     elif source_request:
 
         tool_name = "🔍 Source Finder"
 
-        sources = find_sources(question)
+        sources = find_sources(
+            question,
+            st.session_state.rag_data
+        )
 
         if sources:
 
@@ -271,75 +581,38 @@ if question:
             )
 
 
-    # ---------------------------------
-    # SUMMARIZER
-    # ---------------------------------
-
-    elif summary_request:
+    elif summary_request and st.session_state.rag_data:
 
         tool_name = "📝 Summarizer"
 
-        context = search_pdf(question)
+        answer, sources = summarize_pdf(
+            question,
+            st.session_state.rag_data
+        )
 
-        answer = summarize_text(context)
 
-        sources = get_pdf_sources(question)
-
-
-    # ---------------------------------
-    # RAG
-    # ---------------------------------
-
-    else:
+    elif st.session_state.rag_data:
 
         tool_name = "📚 RAG"
 
-        context = search_pdf(question)
-
-        sources = get_pdf_sources(question)
-
-        prompt = f"""
-You are a helpful PDF question-answering assistant.
-
-Answer the question using ONLY the information
-provided in the PDF context.
-
-If the answer is not available in the PDF context,
-say:
-
-"I could not find this information in the PDF."
-
-PDF CONTEXT:
-
-{context}
-
-QUESTION:
-
-{question}
-
-Give a simple and clear answer.
-"""
-
-        response = ollama.chat(
-            model="qwen2.5:0.5b",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
+        answer, sources = answer_from_pdf(
+            question,
+            st.session_state.rag_data
         )
 
-        answer = response[
-            "message"
-        ][
-            "content"
-        ]
+
+    else:
+
+        tool_name = "🤖 General AI"
+
+        sources = []
+
+        answer = general_ai(
+            question
+        )
 
 
-    # =========================
-    # AGENT RESULT
-    # =========================
+    # SHOW RESULT
 
     st.info(
         f"🤖 Agent selected: {tool_name}"
@@ -367,18 +640,10 @@ Give a simple and clear answer.
         )
 
 
-    # =========================
-    # FINAL ANSWER
-    # =========================
-
     st.chat_message(
         "assistant"
     ).write(answer)
 
-
-    # =========================
-    # SOURCES
-    # =========================
 
     if sources:
 
@@ -391,19 +656,13 @@ Give a simple and clear answer.
             )
 
 
-    # =========================
-    # SAVE ANSWER
-    # =========================
-
     st.session_state.chat_history.append({
         "role": "assistant",
         "content": answer
     })
 
 
-# =========================
 # CLEAR CHAT
-# =========================
 
 st.divider()
 
