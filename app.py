@@ -5,7 +5,6 @@ from google import genai
 import ast
 import operator
 
-
 # PAGE SETTINGS
 
 st.set_page_config(
@@ -19,9 +18,13 @@ st.set_page_config(
 
 @st.cache_resource
 def get_gemini_client():
-
     try:
-        return genai.Client()
+        api_key = st.secrets["GEMINI_API_KEY"]
+
+        if not api_key:
+            return None
+
+        return genai.Client(api_key=api_key)
 
     except Exception:
         return None
@@ -68,11 +71,15 @@ def safe_calculate(expression):
 
             if isinstance(node, ast.Constant):
 
-                if isinstance(node.value, (int, float)):
-
+                if isinstance(
+                    node.value,
+                    (int, float)
+                ):
                     return node.value
 
-                raise ValueError("Invalid number")
+                raise ValueError(
+                    "Invalid number"
+                )
 
             if isinstance(node, ast.BinOp):
 
@@ -81,7 +88,9 @@ def safe_calculate(expression):
                 )
 
                 if operation is None:
-                    raise ValueError("Invalid operator")
+                    raise ValueError(
+                        "Invalid operator"
+                    )
 
                 return operation(
                     evaluate(node.left),
@@ -95,22 +104,28 @@ def safe_calculate(expression):
                 )
 
                 if operation is None:
-                    raise ValueError("Invalid operator")
+                    raise ValueError(
+                        "Invalid operator"
+                    )
 
                 return operation(
                     evaluate(node.operand)
                 )
 
-            raise ValueError("Invalid expression")
+            raise ValueError(
+                "Invalid expression"
+            )
 
-        return str(evaluate(tree.body))
+        return str(
+            evaluate(tree.body)
+        )
 
     except Exception:
 
         return "Invalid calculation."
 
 
-# PDF SEARCH
+# PDF RELEVANCE SEARCH
 
 def get_relevant_chunks(
     question,
@@ -122,12 +137,30 @@ def get_relevant_chunks(
         return []
 
     stop_words = {
-        "what", "is", "the", "a", "an",
-        "are", "of", "in", "on", "to",
-        "for", "and", "how", "why",
-        "does", "do", "this", "that",
-        "tell", "me", "about",
-        "which", "pdf", "contains",
+        "what",
+        "is",
+        "the",
+        "a",
+        "an",
+        "are",
+        "of",
+        "in",
+        "on",
+        "to",
+        "for",
+        "and",
+        "how",
+        "why",
+        "does",
+        "do",
+        "this",
+        "that",
+        "tell",
+        "me",
+        "about",
+        "which",
+        "pdf",
+        "contains",
         "information"
     }
 
@@ -160,13 +193,18 @@ def get_relevant_chunks(
         )
 
         score = len(
-            important_words & chunk_words
+            important_words
+            & chunk_words
         )
 
         if score > 0:
 
             scored_chunks.append(
-                (score, source, text)
+                (
+                    score,
+                    source,
+                    text
+                )
             )
 
     scored_chunks.sort(
@@ -200,16 +238,16 @@ def find_sources(
     return sources
 
 
-# GEMINI GENERATION
+# GEMINI REQUEST
 
 def ask_gemini(prompt):
 
     if client is None:
 
         return (
-            "Gemini API is not configured. "
-            "Please add GEMINI_API_KEY in "
-            "Streamlit Secrets."
+            "Gemini API is not configured.\n\n"
+            "Please check that GEMINI_API_KEY "
+            "is correctly added in Streamlit Secrets."
         )
 
     try:
@@ -229,14 +267,15 @@ def ask_gemini(prompt):
         )
 
 
-# GENERAL AI TOOL
+# GENERAL AI
 
 def general_ai(question):
 
     prompt = f"""
 You are a helpful AI assistant.
 
-Answer the user's question clearly and simply.
+Answer the user's question clearly,
+accurately and simply.
 
 Question:
 {question}
@@ -266,7 +305,6 @@ def answer_from_pdf(
         ), []
 
     context_parts = []
-
     sources = []
 
     for score, source, text in chunks:
@@ -327,7 +365,6 @@ def summarize_pdf(
         ), []
 
     context_parts = []
-
     sources = []
 
     for score, source, text in chunks:
@@ -362,20 +399,22 @@ Give a short, useful summary.
 
     return answer, sources
 
+# MAIN UI
 
-# TITLE
-
-st.title("🤖 AI Agent Assistant")
+st.title(
+    "🤖 AI Agent Assistant"
+)
 
 st.write(
     "An AI agent that understands your request "
     "and selects the appropriate tool."
 )
 
-
 # KNOWLEDGE BASE
 
-st.subheader("📄 Knowledge Base")
+st.subheader(
+    "📄 Knowledge Base"
+)
 
 uploaded_files = st.file_uploader(
     "Upload one or more PDF documents",
@@ -401,12 +440,15 @@ if uploaded_files:
             for page in reader.pages:
 
                 text += (
-                    page.extract_text() or ""
+                    page.extract_text()
+                    or ""
                 )
 
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=50
+            splitter = (
+                RecursiveCharacterTextSplitter(
+                    chunk_size=500,
+                    chunk_overlap=50
+                )
             )
 
             chunks = splitter.split_text(
@@ -415,26 +457,35 @@ if uploaded_files:
 
             for chunk in chunks:
 
-                all_chunks.append({
-                    "source": uploaded_file.name,
-                    "text": chunk
-                })
+                all_chunks.append(
+                    {
+                        "source":
+                            uploaded_file.name,
+                        "text":
+                            chunk
+                    }
+                )
 
         except Exception as error:
 
             st.error(
                 f"Could not read "
-                f"{uploaded_file.name}: {error}"
+                f"{uploaded_file.name}: "
+                f"{error}"
             )
 
-    st.session_state.rag_data = all_chunks
+    st.session_state.rag_data = (
+        all_chunks
+    )
 
     st.success(
         f"✅ {len(uploaded_files)} PDF(s) loaded! "
         f"{len(all_chunks)} chunks created."
     )
 
-    st.write("### 📚 Uploaded Documents")
+    st.write(
+        "### 📚 Uploaded Documents"
+    )
 
     for uploaded_file in uploaded_files:
 
@@ -442,12 +493,17 @@ if uploaded_files:
             f"📄 {uploaded_file.name}"
         )
 
-# ASK THE AGENT
 
-st.subheader("💬 Ask the Agent")
+# CHAT
+
+st.subheader(
+    "💬 Ask the Agent"
+)
 
 
-for message in st.session_state.chat_history:
+for message in (
+    st.session_state.chat_history
+):
 
     if message["role"] == "user":
 
@@ -475,18 +531,29 @@ if question:
 
     question = question.strip()
 
-    question_lower = question.lower()
+    question_lower = (
+        question.lower()
+    )
 
-    st.session_state.chat_history.append({
-        "role": "user",
-        "content": question
-    })
+
+    # Save user message
+
+    st.session_state.chat_history.append(
+        {
+            "role": "user",
+            "content": question
+        }
+    )
 
 
     # MATH DETECTION
 
     math_symbols = [
-        "+", "-", "*", "/", "%"
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
     ]
 
     has_number = any(
@@ -512,37 +579,65 @@ if question:
         and only_math
     )
 
-
     # SOURCE REQUEST
-
+  
     source_request = (
-        "which pdf" in question_lower
-        or "which document" in question_lower
-        or "what pdf" in question_lower
-        or "find the source" in question_lower
-        or "find source" in question_lower
-        or "show the source" in question_lower
-        or "show source" in question_lower
-        or "where did you find" in question_lower
+
+        "which pdf"
+        in question_lower
+
+        or "which document"
+        in question_lower
+
+        or "what pdf"
+        in question_lower
+
+        or "find the source"
+        in question_lower
+
+        or "find source"
+        in question_lower
+
+        or "show the source"
+        in question_lower
+
+        or "show source"
+        in question_lower
+
+        or "where did you find"
+        in question_lower
     )
 
     # SUMMARY REQUEST
-
+    
     summary_request = (
-        "summarize" in question_lower
-        or "summarise" in question_lower
-        or "summary" in question_lower
-        or "give a summary" in question_lower
-        or "short summary" in question_lower
-        or "brief" in question_lower
+
+        "summarize"
+        in question_lower
+
+        or "summarise"
+        in question_lower
+
+        or "summary"
+        in question_lower
+
+        or "give a summary"
+        in question_lower
+
+        or "short summary"
+        in question_lower
+
+        or "brief"
+        in question_lower
     )
 
-
-    # TOOL SELECTION
-
+    # AGENT ROUTING
+    
     if is_math:
 
-        tool_name = "🔧 Calculator"
+        tool_name = (
+            "🔧 Calculator"
+        )
 
         answer = safe_calculate(
             question
@@ -553,7 +648,9 @@ if question:
 
     elif source_request:
 
-        tool_name = "🔍 Source Finder"
+        tool_name = (
+            "🔍 Source Finder"
+        )
 
         sources = find_sources(
             question,
@@ -581,9 +678,14 @@ if question:
             )
 
 
-    elif summary_request and st.session_state.rag_data:
+    elif (
+        summary_request
+        and st.session_state.rag_data
+    ):
 
-        tool_name = "📝 Summarizer"
+        tool_name = (
+            "📝 Summarizer"
+        )
 
         answer, sources = summarize_pdf(
             question,
@@ -593,7 +695,9 @@ if question:
 
     elif st.session_state.rag_data:
 
-        tool_name = "📚 RAG"
+        tool_name = (
+            "📚 RAG"
+        )
 
         answer, sources = answer_from_pdf(
             question,
@@ -603,7 +707,9 @@ if question:
 
     else:
 
-        tool_name = "🤖 General AI"
+        tool_name = (
+            "🤖 General AI"
+        )
 
         sources = []
 
@@ -612,12 +718,11 @@ if question:
         )
 
 
-    # SHOW RESULT
+    # SHOW AGENT ACTIVITY
 
     st.info(
         f"🤖 Agent selected: {tool_name}"
     )
-
 
     with st.expander(
         "🔎 Agent Activity"
@@ -640,14 +745,22 @@ if question:
         )
 
 
+# SHOW ANSWER
+
     st.chat_message(
         "assistant"
-    ).write(answer)
+    ).write(
+        answer
+    )
 
 
+    # SHOW SOURCES
+    
     if sources:
 
-        st.subheader("📄 Sources")
+        st.subheader(
+            "📄 Sources"
+        )
 
         for source in sources:
 
@@ -656,17 +769,24 @@ if question:
             )
 
 
-    st.session_state.chat_history.append({
-        "role": "assistant",
-        "content": answer
-    })
+    # Save assistant message
+
+    st.session_state.chat_history.append(
+        {
+            "role": "assistant",
+            "content": answer
+        }
+    )
 
 
 # CLEAR CHAT
 
 st.divider()
 
-if st.button("🗑️ Clear Chat"):
+
+if st.button(
+    "🗑️ Clear Chat"
+):
 
     st.session_state.chat_history = []
 
